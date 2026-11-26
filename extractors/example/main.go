@@ -1,7 +1,8 @@
-// Command example runs the Go extractor on one file and prints what it found.
+// Command example builds the code graph of a directory (or of the listed
+// files) and prints it.
 //
-//	go run ./example path/to/file.go          # summary
-//	go run ./example -json path/to/file.go    # full result as JSON
+//	go run ./extractors/example path/to/repo          # summary
+//	go run ./extractors/example -json path/to/repo    # the whole graph as JSON
 package main
 
 import (
@@ -11,17 +12,39 @@ import (
 	"log"
 	"os"
 
-	extractors "github.com/notrobot1/funcscan2/extractors/go"
+	"github.com/notrobot1/funcscan2/extractors"
 )
 
 func main() {
-	asJSON := flag.Bool("json", false, "print the full result as JSON")
+	asJSON := flag.Bool("json", false, "print the whole graph as JSON")
+	list := flag.Bool("list", false, "only list the files that would be extracted")
+	root := flag.String("root", "", "directory ids and paths are relative to (default: the first argument if it is a directory)")
 	flag.Parse()
-	if flag.NArg() != 1 {
-		log.Fatal("usage: example [-json] <file.go>")
+	if flag.NArg() == 0 {
+		log.Fatal("usage: example [-json] [-root dir] <dir or file>...")
 	}
 
-	result, err := extractors.ExtractGo(flag.Arg(0))
+	var files []string
+	for _, arg := range flag.Args() {
+		found, err := extractors.CollectFiles(arg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		files = append(files, found...)
+	}
+	if *list {
+		for _, f := range files {
+			fmt.Println(f)
+		}
+		return
+	}
+	if *root == "" {
+		if info, err := os.Stat(flag.Arg(0)); err == nil && info.IsDir() {
+			*root = flag.Arg(0)
+		}
+	}
+
+	graph, err := extractors.Extract(files, extractors.Options{Root: *root})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,23 +52,21 @@ func main() {
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(result); err != nil {
+		if err := enc.Encode(graph); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
 
-	fmt.Printf("nodes: %d, edges: %d, raw calls: %d\n\n",
-		len(result.Nodes), len(result.Edges), len(result.RawCalls))
-	for _, n := range result.Nodes {
-		fmt.Printf("node  %-40s %-24s %s\n", n.ID, n.Label, n.SourceLocation)
+	fmt.Printf("files: %d, nodes: %d, edges: %d\n", len(files), len(graph.Nodes), len(graph.Edges))
+	byRelation := map[string]int{}
+	for _, e := range graph.Edges {
+		byRelation[e.Relation]++
 	}
-	fmt.Println()
-	for _, e := range result.Edges {
-		fmt.Printf("edge  %s -[%s]-> %s  (%s)\n", e.Source, e.Relation, e.Target, e.SourceLocation)
+	for relation, count := range byRelation {
+		fmt.Printf("  %-14s %d\n", relation, count)
 	}
-	fmt.Println()
-	for _, c := range result.RawCalls {
-		fmt.Printf("call  %s -> %s  (%s)\n", c.CallerNID, c.Callee, c.SourceLocation)
+	for _, w := range graph.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 }

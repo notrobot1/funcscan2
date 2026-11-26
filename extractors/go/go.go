@@ -1,7 +1,7 @@
-// Package extractors turns source files into graph fragments: nodes for the
-// declarations a file holds, edges for the relations it can prove on its own,
-// and raw calls left for a corpus-level resolver.
-package extractors
+// Package golang is the Go language support of funcscan: the per-file
+// extractor (ExtractGo) and the cross-file passes that only make sense for Go
+// (see resolve.go). Language() bundles both for the extractors package.
+package golang
 
 import (
 	"fmt"
@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/notrobot1/funcscan2/extractors/base"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
 )
@@ -29,7 +30,7 @@ var goPredeclaredTypes = newSet(
 // service-layer edges — a layering violation absent from the source.
 //
 // Deliberately language-local rather than added to the shared
-// LanguageBuiltinGlobals: `new`, `close` and friends are ordinary method names
+// base.LanguageBuiltinGlobals: `new`, `close` and friends are ordinary method names
 // in the other languages that consult the shared set — listing them there kills
 // every in-file Rust `Type::new()` edge.
 //
@@ -279,8 +280,8 @@ func goInferredCompositeBindings(names, values []*sitter.Node, source []byte) ma
 //
 // Unknown local bindings shadow package variables. Package-only tables exclude
 // fields and function bodies so unrelated scopes cannot supply a receiver type.
-func goReceiverTypeTable(root *sitter.Node, source []byte, packageOnly bool) TypeTable {
-	table := TypeTable{}
+func goReceiverTypeTable(root *sitter.Node, source []byte, packageOnly bool) base.TypeTable {
+	table := base.TypeTable{}
 	rootID := root.Id()
 	stack := []*sitter.Node{root}
 	for len(stack) > 0 {
@@ -320,7 +321,7 @@ func goReceiverTypeTable(root *sitter.Node, source []byte, packageOnly bool) Typ
 				if bound == "" {
 					bound = inferred[name]
 				}
-				table.setDefault(name, bound)
+				table.SetDefault(name, bound)
 			}
 		case t == "short_var_declaration":
 			left, right := n.ChildByFieldName("left"), n.ChildByFieldName("right")
@@ -334,14 +335,14 @@ func goReceiverTypeTable(root *sitter.Node, source []byte, packageOnly bool) Typ
 				inferred := goInferredCompositeBindings(names, namedChildren(right), source)
 				for _, nameNode := range names {
 					name := readText(nameNode, source)
-					table.setDefault(name, inferred[name])
+					table.SetDefault(name, inferred[name])
 				}
 			}
 		case t == "range_clause" && hasChildKind(kids, ":="):
 			if left := n.ChildByFieldName("left"); left != nil {
 				for _, nameNode := range namedChildren(left) {
 					if nameNode.Kind() == "identifier" {
-						table.setDefault(readText(nameNode, source), "")
+						table.SetDefault(readText(nameNode, source), "")
 					}
 				}
 			}
@@ -426,7 +427,7 @@ type functionBody struct {
 	body       *sitter.Node
 	selfName   string
 	selfType   string
-	scopeTypes TypeTable
+	scopeTypes base.TypeTable
 }
 
 type goExtractor struct {
@@ -436,8 +437,8 @@ type goExtractor struct {
 	pkgScope string
 	fileNID  string
 
-	nodes   []*Node
-	edges   []Edge
+	nodes   []*base.Node
+	edges   []*base.Edge
 	seenIDs stringSet
 
 	functionBodies []functionBody
@@ -452,7 +453,7 @@ type goExtractor struct {
 	// local package name (including aliases) -> written Go import path
 	importedPkgs map[string]string
 
-	declRegistry *DeclIDRegistry
+	declRegistry *base.DeclIDRegistry
 	// Node ids are casefolded, so `Run` and `run` declared in one file produce
 	// the same id; caseGroups records every spelling behind each plain id. See
 	// symbolNID for how a collision is settled.
@@ -462,14 +463,14 @@ type goExtractor struct {
 	localTypeNames stringSet
 	labelToNID     map[string]string
 	seenCallPairs  map[[2]string]struct{}
-	rawCalls       []RawCall
+	rawCalls       []*base.RawCall
 }
 
 // ExtractGo extracts functions, methods, type declarations, and imports from a
 // .go file.
-func ExtractGo(path string) (*Result, error) {
-	path = normalizePath(path)
-	source, err := readSourceBytes(path)
+func ExtractGo(path string) (*base.FileResult, error) {
+	path = base.NormalizePath(path)
+	source, err := base.ReadSourceBytes(path)
 	if err != nil {
 		return nil, err
 	}
@@ -485,10 +486,10 @@ func ExtractGo(path string) (*Result, error) {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	stem := fileStem(path)
+	stem := base.FileStem(path)
 	// Use directory name as package scope so methods on the same type across
 	// multiple files in a package share one canonical type node.
-	pkgScope := parentDirName(path)
+	pkgScope := base.ParentDirName(path)
 	if pkgScope == "" {
 		pkgScope = stem
 	}
@@ -506,9 +507,9 @@ func ExtractGo(path string) (*Result, error) {
 		labelToNID:        map[string]string{},
 		seenCallPairs:     map[[2]string]struct{}{},
 	}
-	x.fileNID = makeID(path)
+	x.fileNID = base.MakeID(path)
 	x.addNode(x.fileNID, filepath.Base(path), 1)
-	x.declRegistry = NewDeclIDRegistry(x.fileNID)
+	x.declRegistry = base.NewDeclIDRegistry(x.fileNID)
 
 	x.scanTypeNames(root)
 	x.scanDeclarations(root)
@@ -533,7 +534,7 @@ func ExtractGo(path string) (*Result, error) {
 			}
 		}
 		if x.interfaceNIDs.has(n.ID) {
-			n.Metadata = map[string]string{"language": "go", "kind": "interface"}
+			n.Metadata = map[string]any{"language": "go", "kind": "interface"}
 		}
 	}
 
@@ -596,7 +597,7 @@ func ExtractGo(path string) (*Result, error) {
 		x.walkCalls(fb.body, fb.callerNID, fb.selfName, fb.selfType, fb.scopeTypes)
 	}
 
-	cleanEdges := make([]Edge, 0, len(x.edges))
+	cleanEdges := make([]*base.Edge, 0, len(x.edges))
 	for _, e := range x.edges {
 		isImport := e.Relation == "imports" || e.Relation == "imports_from"
 		if x.seenIDs.has(e.Source) && (x.seenIDs.has(e.Target) || isImport) {
@@ -605,19 +606,19 @@ func ExtractGo(path string) (*Result, error) {
 	}
 	rawCalls := x.rawCalls
 	if rawCalls == nil {
-		rawCalls = []RawCall{}
+		rawCalls = []*base.RawCall{}
 	}
 
-	return &Result{
+	return &base.FileResult{
 		Nodes:     x.nodes,
 		Edges:     cleanEdges,
 		RawCalls:  rawCalls,
 		GoImports: x.importedPkgs,
-		GoTypeTable: GoTypeTable{
+		GoTypeTable: &base.GoTypeTable{
 			Path:        path,
 			Table:       typeTable,
 			PackageVars: packageTypes,
-			PackagePath: OptString(packagePath),
+			PackagePath: base.OptString(packagePath),
 		},
 	}, nil
 }
@@ -629,7 +630,7 @@ func (x *goExtractor) addNode(nid, label string, line int) {
 		return
 	}
 	x.seenIDs[nid] = struct{}{}
-	x.nodes = append(x.nodes, &Node{
+	x.nodes = append(x.nodes, &base.Node{
 		ID:             nid,
 		Label:          label,
 		FileType:       "code",
@@ -639,7 +640,7 @@ func (x *goExtractor) addNode(nid, label string, line int) {
 }
 
 func (x *goExtractor) addEdge(src, tgt, relation string, line int, context string) {
-	x.edges = append(x.edges, Edge{
+	x.edges = append(x.edges, &base.Edge{
 		Source:         src,
 		Target:         tgt,
 		Relation:       relation,
@@ -656,7 +657,7 @@ func (x *goExtractor) ensureNamedNode(name string) string {
 	if x.seenIDs.has(nid) {
 		return nid
 	}
-	nid = makeID(name)
+	nid = base.MakeID(name)
 	if !x.seenIDs.has(nid) {
 		// The name isn't declared in this file, so this is a cross-file
 		// reference (e.g. a type defined in another file of the package). Emit
@@ -665,7 +666,7 @@ func (x *goExtractor) ensureNamedNode(name string) string {
 		// file's path into the id once colliding ids are disambiguated and
 		// block the rewire: the phantom-duplicate-node bug.
 		x.seenIDs[nid] = struct{}{}
-		x.nodes = append(x.nodes, &Node{
+		x.nodes = append(x.nodes, &base.Node{
 			ID:         nid,
 			Label:      name,
 			FileType:   "code",
@@ -808,13 +809,13 @@ func (x *goExtractor) plainSymbolNID(node *sitter.Node) (nid, name string, ok bo
 		return "", "", false
 	}
 	name = x.text(nameNode)
-	base := x.stem
+	owner := x.stem
 	if node.Kind() == "method_declaration" {
 		if receiverType, _ := x.receiverOf(node); receiverType != "" {
-			base = x.typeSymbolNID(receiverType)
+			owner = x.typeSymbolNID(receiverType)
 		}
 	}
-	return makeID(base, name), name, true
+	return base.MakeID(owner, name), name, true
 }
 
 func (x *goExtractor) recordSpelling(plainNID, name string) {
@@ -834,7 +835,7 @@ func (x *goExtractor) scanTypeNames(node *sitter.Node) {
 	if kind == "type_spec" || (kind == "type_alias" && !goAliasReExports(node, x.source)) {
 		if nameNode := node.ChildByFieldName("name"); nameNode != nil {
 			name := x.text(nameNode)
-			x.recordSpelling(makeID(x.pkgScope, name), name)
+			x.recordSpelling(base.MakeID(x.pkgScope, name), name)
 		}
 	}
 	if kind == "function_declaration" || kind == "method_declaration" {
@@ -860,7 +861,7 @@ func (x *goExtractor) scanDeclarations(node *sitter.Node) {
 					}
 					if methodName := elem.ChildByFieldName("name"); methodName != nil {
 						name := x.text(methodName)
-						x.recordSpelling(makeID(ownerNID, name), name)
+						x.recordSpelling(base.MakeID(ownerNID, name), name)
 					}
 				}
 			}
@@ -917,14 +918,14 @@ func (x *goExtractor) symbolNID(plainNID, name, kind string) string {
 			}
 		}
 		if !(len(exported) == 1 && exported[0] == name) {
-			nid = makeID(plainNID, nameSalt(name))
+			nid = base.MakeID(plainNID, nameSalt(name))
 		}
 	}
 	return x.declRegistry.Resolve(nid, name, kind, x.seenIDs)
 }
 
 func (x *goExtractor) typeSymbolNID(name string) string {
-	plainNID := makeID(x.pkgScope, name)
+	plainNID := base.MakeID(x.pkgScope, name)
 	if !x.caseGroups[plainNID].has(name) {
 		return x.declRegistry.Resolve(plainNID, name, "type", x.seenIDs)
 	}
@@ -975,7 +976,7 @@ func (x *goExtractor) walkFunction(node *sitter.Node) {
 	}
 	funcName := x.text(nameNode)
 	ln := line(node)
-	funcNID := x.symbolNID(makeID(x.stem, funcName), funcName, "fn")
+	funcNID := x.symbolNID(base.MakeID(x.stem, funcName), funcName, "fn")
 	x.addNode(funcNID, funcName+"()", ln)
 	x.callableNIDs[funcNID] = struct{}{}
 	x.addEdge(x.fileNID, funcNID, "contains", ln, "")
@@ -1003,11 +1004,11 @@ func (x *goExtractor) walkMethod(node *sitter.Node) {
 		parentNID := x.typeSymbolNID(receiverType)
 		x.addNode(parentNID, receiverType, ln)
 		x.callableClassNIDs[parentNID] = struct{}{}
-		methodNID = x.symbolNID(makeID(parentNID, methodName), methodName, "fn")
+		methodNID = x.symbolNID(base.MakeID(parentNID, methodName), methodName, "fn")
 		x.addNode(methodNID, "."+methodName+"()", ln)
 		x.addEdge(parentNID, methodNID, "method", ln, "")
 	} else {
-		methodNID = x.symbolNID(makeID(x.stem, methodName), methodName, "fn")
+		methodNID = x.symbolNID(base.MakeID(x.stem, methodName), methodName, "fn")
 		x.addNode(methodNID, methodName+"()", ln)
 		x.addEdge(x.fileNID, methodNID, "contains", ln, "")
 	}
@@ -1128,7 +1129,7 @@ func (x *goExtractor) walkInterfaceBody(body *sitter.Node, typeNID string, typeP
 			}
 			name := x.text(nameNode)
 			ln := line(elem)
-			methodNID := x.symbolNID(makeID(typeNID, name), name, "fn")
+			methodNID := x.symbolNID(base.MakeID(typeNID, name), name, "fn")
 			x.addNode(methodNID, "."+name+"()", ln)
 			x.addEdge(typeNID, methodNID, "method", ln, "")
 			x.emitMethodRefs(elem, methodNID, ln, typeParams)
@@ -1189,7 +1190,7 @@ func (x *goExtractor) addImport(spec *sitter.Node) {
 	raw := strings.Trim(x.text(pathNode), `"`)
 	// Prefix with go_pkg_ so stdlib names (e.g. "context") don't collide with
 	// local files of the same basename.
-	x.addEdge(x.fileNID, makeID("go", "pkg", raw), "imports_from", line(spec), "import")
+	x.addEdge(x.fileNID, base.MakeID("go", "pkg", raw), "imports_from", line(spec), "import")
 	// Track local name (alias or last path segment).
 	localName := raw[strings.LastIndex(raw, "/")+1:]
 	if alias := spec.ChildByFieldName("name"); alias != nil {
@@ -1203,7 +1204,7 @@ func (x *goExtractor) addImport(spec *sitter.Node) {
 // ownFieldSelector reports whether operand is `s.field` with `s` this method's
 // own receiver, and returns the field name. Any other head could be a package
 // or a variable whose type the flat table does not know.
-func (x *goExtractor) ownFieldSelector(operand *sitter.Node, selfName, selfType string, scope TypeTable) (string, bool) {
+func (x *goExtractor) ownFieldSelector(operand *sitter.Node, selfName, selfType string, scope base.TypeTable) (string, bool) {
 	inner := operand.ChildByFieldName("operand")
 	if selfName == "" || inner == nil || inner.Kind() != "identifier" ||
 		x.text(inner) != selfName || scope[selfName] != selfType {
@@ -1212,15 +1213,15 @@ func (x *goExtractor) ownFieldSelector(operand *sitter.Node, selfName, selfType 
 	return x.text(operand.ChildByFieldName("field")), true
 }
 
-func (x *goExtractor) walkCalls(node *sitter.Node, callerNID, selfName, selfType string, scope TypeTable) {
+func (x *goExtractor) walkCalls(node *sitter.Node, callerNID, selfName, selfType string, scope base.TypeTable) {
 	kind := node.Kind()
 	if kind == "function_declaration" || kind == "method_declaration" {
 		return
 	}
 	if goScopeNodes.has(kind) {
-		scope = scope.clone()
+		scope = scope.Clone()
 		if kind == "func_literal" {
-			scope.update(goReceiverTypeTable(node, x.source, false))
+			scope.Update(goReceiverTypeTable(node, x.source, false))
 		}
 	}
 	if kind == "call_expression" {
@@ -1231,12 +1232,12 @@ func (x *goExtractor) walkCalls(node *sitter.Node, callerNID, selfName, selfType
 		x.walkCalls(child, callerNID, selfName, selfType, scope)
 		switch child.Kind() {
 		case "short_var_declaration", "var_spec", "range_clause":
-			scope.update(goReceiverTypeTable(child, x.source, false))
+			scope.Update(goReceiverTypeTable(child, x.source, false))
 		}
 	}
 }
 
-func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfType string, scope TypeTable) {
+func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfType string, scope base.TypeTable) {
 	funcNode := node.ChildByFieldName("function")
 	if funcNode == nil {
 		return
@@ -1262,7 +1263,7 @@ func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfTyp
 		// A visible local binding takes precedence over a same-named import,
 		// even when its receiver type is unknown.
 		_, isImport := x.importedPkgs[receiverName]
-		isMemberCall = scope.has(receiverName) || !isImport
+		isMemberCall = scope.Has(receiverName) || !isImport
 		switch {
 		case !isMemberCall:
 			packageReceiver = receiverName
@@ -1271,7 +1272,7 @@ func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfTyp
 		case operand.Kind() == "identifier":
 			memberReceiver = receiverName
 			memberReceiverType = scope[receiverName]
-			if !scope.has(receiverName) && x.localTypeNames.has(receiverName) {
+			if !scope.Has(receiverName) && x.localTypeNames.has(receiverName) {
 				memberReceiverType = receiverName
 			}
 		case operand.Kind() == "parenthesized_expression":
@@ -1286,7 +1287,7 @@ func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfTyp
 			}
 			if expression.Kind() == "unary_expression" && strings.HasPrefix(x.text(expression), "*") {
 				name := x.text(expression.ChildByFieldName("operand"))
-				if x.localTypeNames.has(name) && !scope.has(name) {
+				if x.localTypeNames.has(name) && !scope.Has(name) {
 					memberReceiver = name
 					memberReceiverType = name
 				}
@@ -1313,7 +1314,7 @@ func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfTyp
 	if calleeName == "" {
 		return
 	}
-	if _, builtin := LanguageBuiltinGlobals[calleeName]; builtin {
+	if _, builtin := base.LanguageBuiltinGlobals[calleeName]; builtin {
 		return
 	}
 	// A member call must be resolved through its receiver's type; a bare name
@@ -1332,25 +1333,25 @@ func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfTyp
 	}
 	receiverBound := false
 	if fieldOwner == "" && memberReceiver != "" {
-		receiverBound = scope.has(memberReceiver)
+		receiverBound = scope.Has(memberReceiver)
 	}
-	x.rawCalls = append(x.rawCalls, RawCall{
+	x.rawCalls = append(x.rawCalls, &base.RawCall{
 		CallerNID:    callerNID,
 		Callee:       calleeName,
 		IsMemberCall: isMemberCall,
 		Language:     "go",
-		Receiver:     OptString(packageReceiver),
+		Receiver:     base.OptString(packageReceiver),
 		// A key of its own: `receiver` means "imported package" here, and
 		// member-call resolvers for other languages select on `is_member_call`
 		// plus `receiver` without checking the language, so a Go name placed
 		// there would bind to their types in a mixed corpus.
-		MemberReceiver: OptString(memberReceiver),
-		ReceiverType:   OptString(memberReceiverType),
+		MemberReceiver: base.OptString(memberReceiver),
+		ReceiverType:   base.OptString(memberReceiverType),
 		ReceiverBound:  receiverBound,
 		// Field ownership remains explicit when the struct is declared in a
 		// sibling file of the package.
-		FieldOwner:     OptString(fieldOwner),
-		ImportPath:     OptString(importPath),
+		FieldOwner:     base.OptString(fieldOwner),
+		ImportPath:     base.OptString(importPath),
 		SourceFile:     x.strPath,
 		SourceLocation: fmt.Sprintf("L%d", line(node)),
 	})
@@ -1364,7 +1365,7 @@ func (x *goExtractor) recordCall(node *sitter.Node, callerNID, selfName, selfTyp
 // member-call resolver as an indirect call through the receiver's declared
 // type. `s.field.Handle` is typed through the field, as a direct `s.field.M()`
 // is, only when `s` is this method's own receiver.
-func (x *goExtractor) recordMethodValueArgs(node *sitter.Node, callerNID, selfName, selfType string, scope TypeTable) {
+func (x *goExtractor) recordMethodValueArgs(node *sitter.Node, callerNID, selfName, selfType string, scope base.TypeTable) {
 	args := node.ChildByFieldName("arguments")
 	if args == nil {
 		return
@@ -1382,11 +1383,11 @@ func (x *goExtractor) recordMethodValueArgs(node *sitter.Node, callerNID, selfNa
 		switch operand.Kind() {
 		case "identifier":
 			name = x.text(operand)
-			if _, isImport := x.importedPkgs[name]; isImport && !scope.has(name) {
+			if _, isImport := x.importedPkgs[name]; isImport && !scope.Has(name) {
 				continue
 			}
 			receiverType = scope[name]
-			receiverBound = scope.has(name)
+			receiverBound = scope.Has(name)
 		case "selector_expression":
 			fieldName, ok := x.ownFieldSelector(operand, selfName, selfType, scope)
 			if !ok {
@@ -1396,21 +1397,21 @@ func (x *goExtractor) recordMethodValueArgs(node *sitter.Node, callerNID, selfNa
 			fieldOwner = selfType
 			// Python's `name in scope if not field_owner else False`: an empty
 			// owner (a receiver without a type) still consults the scope.
-			receiverBound = fieldOwner == "" && scope.has(name)
+			receiverBound = fieldOwner == "" && scope.Has(name)
 		default:
 			continue
 		}
-		x.rawCalls = append(x.rawCalls, RawCall{
+		x.rawCalls = append(x.rawCalls, &base.RawCall{
 			CallerNID:      callerNID,
 			Callee:         x.text(field),
 			IsMemberCall:   true,
 			Indirect:       true,
 			Context:        "argument",
 			Language:       "go",
-			MemberReceiver: OptString(name),
-			ReceiverType:   OptString(receiverType),
+			MemberReceiver: base.OptString(name),
+			ReceiverType:   base.OptString(receiverType),
 			ReceiverBound:  receiverBound,
-			FieldOwner:     OptString(fieldOwner),
+			FieldOwner:     base.OptString(fieldOwner),
 			SourceFile:     x.strPath,
 			SourceLocation: fmt.Sprintf("L%d", line(arg)),
 		})
