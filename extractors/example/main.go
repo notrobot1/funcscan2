@@ -1,5 +1,5 @@
 // Command example builds the code graph of a directory (or of the listed
-// files) and prints it.
+// files), groups it into communities, and prints a summary.
 //
 //	go run ./extractors/example path/to/repo          # summary
 //	go run ./extractors/example -json path/to/repo    # the whole graph as JSON
@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/notrobot1/funcscan2/cluster"
 	"github.com/notrobot1/funcscan2/extractors"
 )
 
@@ -65,6 +66,15 @@ func main() {
 	}
 	for relation, count := range byRelation {
 		fmt.Printf("  %-14s %d\n", relation, count)
+	}
+
+	g := cluster.FromExtract(graph.Nodes, graph.Edges)
+	communities := cluster.Cluster(g, cluster.Options{})
+	labels := cluster.LabelByHub(g, communities)
+	fmt.Printf("\ncommunities: %d (modularity %.3f)\n", len(communities), cluster.Modularity(g, communities))
+	for cid := 0; cid < len(communities) && cid < 10; cid++ {
+		fmt.Printf("  %3d  %-32s %4d nodes, cohesion %.2f\n",
+			cid, labels[cid], len(communities[cid]), cluster.CohesionScore(g, communities[cid]))
 	}
 	for _, w := range graph.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
