@@ -11,7 +11,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/notrobot1/funcscan2/extractors"
+	extractors "github.com/notrobot1/funcscan2/extractors/go"
 )
 
 func main() {
