@@ -73,7 +73,7 @@ func Cluster(g *Graph, opts Options) map[int][]string {
 	}
 	if g.NumEdges() == 0 {
 		out := make(map[int][]string, g.NumNodes())
-		for i, id := range g.Nodes() {
+		for i, id := range g.SortedNodes() {
 			out[i] = []string{id}
 		}
 		return out
@@ -101,7 +101,7 @@ func Cluster(g *Graph, opts Options) map[int][]string {
 	}
 
 	if ambiguousScale != 1 {
-		g = g.scaled("AMBIGUOUS", ambiguousScale)
+		g = scaled(g, "AMBIGUOUS", ambiguousScale)
 	}
 
 	// Hubs are chosen by their degree in the whole graph, before anything is
@@ -109,13 +109,13 @@ func Cluster(g *Graph, opts Options) map[int][]string {
 	hubs := map[string]bool{}
 	if opts.ExcludeHubsPercentile > 0 {
 		degrees := make([]int, 0, g.NumNodes())
-		for i := range g.ids {
-			degrees = append(degrees, g.degree(i))
+		for _, id := range g.Nodes() {
+			degrees = append(degrees, g.Degree(id))
 		}
 		sort.Ints(degrees)
 		at := max(0, int(float64(len(degrees))*opts.ExcludeHubsPercentile/100)-1)
-		for i, id := range g.ids {
-			if g.degree(i) > degrees[at] {
+		for _, id := range g.Nodes() {
+			if g.Degree(id) > degrees[at] {
 				hubs[id] = true
 			}
 		}
@@ -123,7 +123,7 @@ func Cluster(g *Graph, opts Options) map[int][]string {
 
 	// Nodes without edges are set aside: they are communities of their own.
 	var isolates, connected, stranded []string
-	for _, id := range g.Nodes() {
+	for _, id := range g.SortedNodes() {
 		switch {
 		case hubs[id]:
 		case g.Degree(id) == 0:
@@ -266,26 +266,23 @@ func onlyHubNeighbours(g *Graph, id string, hubs map[string]bool) bool {
 	return others > 0
 }
 
-// scaled returns the graph with the weight of every edge of the given
-// confidence multiplied by factor; the graph itself when it has none.
-func (g *Graph) scaled(confidence string, factor float64) *Graph {
+// scaled returns a copy of the graph with the weight of every edge of the
+// given confidence multiplied by factor; the graph itself when it has none.
+func scaled(g *Graph, confidence string, factor float64) *Graph {
 	found := false
-	for i := range g.adj {
-		for _, e := range g.adj[i] {
-			if e.confidence == confidence {
-				found = true
-			}
+	for _, e := range g.Edges() {
+		if e.Confidence == confidence {
+			found = true
+			break
 		}
 	}
 	if !found {
 		return g
 	}
-	out := g.Subgraph(g.ids)
-	for i := range out.adj {
-		for j, e := range out.adj[i] {
-			if j >= i && e.confidence == confidence {
-				e.weight *= factor
-			}
+	out := g.Subgraph(g.Nodes())
+	for _, e := range out.Edges() {
+		if e.Confidence == confidence {
+			e.Edge.Weight *= factor
 		}
 	}
 	return out
@@ -341,7 +338,7 @@ func CohesionScore(g *Graph, nodes []string) float64 {
 		return 1
 	}
 	possible := float64(n) * float64(n-1) / 2
-	return min(1, float64(g.internalEdges(nodes))/possible)
+	return min(1, float64(g.EdgesWithin(nodes))/possible)
 }
 
 // ScoreAll is the CohesionScore of every community.

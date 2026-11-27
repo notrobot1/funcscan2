@@ -43,27 +43,24 @@ func (w *weighted) degree(i int) float64 {
 // visited in the order of their ids, with no randomness, so the same graph
 // always gives the same partition.
 func Louvain(g *Graph, resolution float64) map[string]int {
-	ids := g.Nodes()
-	position := make(map[int]int, len(ids)) // index in g -> index in ids
+	ids := g.SortedNodes()
+	position := make(map[string]int, len(ids))
 	for pos, id := range ids {
-		position[g.index[id]] = pos
+		position[id] = pos
 	}
 	w := &weighted{adj: make([][]halfEdge, len(ids)), self: make([]float64, len(ids))}
 	total := 0.0
-	for pos, id := range ids {
-		for j, e := range g.adj[g.index[id]] {
-			other := position[j]
-			switch {
-			case other == pos:
-				w.self[pos] = e.weight
-				total += e.weight
-			default:
-				w.adj[pos] = append(w.adj[pos], halfEdge{other, e.weight})
-				if other > pos {
-					total += e.weight
-				}
-			}
+	for _, e := range g.Edges() {
+		u, v := position[e.U], position[e.V]
+		total += e.Weight
+		if u == v {
+			w.self[u] = e.Weight
+			continue
 		}
+		w.adj[u] = append(w.adj[u], halfEdge{v, e.Weight})
+		w.adj[v] = append(w.adj[v], halfEdge{u, e.Weight})
+	}
+	for pos := range w.adj {
 		sort.Slice(w.adj[pos], func(a, b int) bool { return w.adj[pos][a].to < w.adj[pos][b].to })
 	}
 
@@ -239,38 +236,26 @@ func Modularity(g *Graph, communities map[int][]string) float64 {
 			next = cid + 1
 		}
 	}
+	for _, id := range g.Nodes() {
+		if _, ok := partition[id]; !ok {
+			partition[id] = next
+			next++
+		}
+	}
 	inside := map[int]float64{}
 	degree := map[int]float64{}
 	total := 0.0
-	for i, id := range g.ids {
-		c, ok := partition[id]
-		if !ok {
-			c, next = next, next+1
-			partition[id] = c
-		}
-		for j, e := range g.adj[i] {
-			switch {
-			case j == i:
-				total += e.weight
-				inside[c] += e.weight
-				degree[c] += 2 * e.weight
-			default:
-				degree[c] += e.weight
-				if j > i {
-					total += e.weight
-				}
-			}
+	for _, e := range g.Edges() {
+		cu, cv := partition[e.U], partition[e.V]
+		total += e.Weight
+		degree[cu] += e.Weight
+		degree[cv] += e.Weight
+		if cu == cv {
+			inside[cu] += e.Weight
 		}
 	}
 	if total <= 0 {
 		return 0
-	}
-	for i, id := range g.ids {
-		for j, e := range g.adj[i] {
-			if j > i && partition[g.ids[j]] == partition[id] {
-				inside[partition[id]] += e.weight
-			}
-		}
 	}
 	q := 0.0
 	for c, d := range degree {

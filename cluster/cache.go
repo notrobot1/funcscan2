@@ -36,18 +36,15 @@ func topologyHash(g *Graph, resolution, hubsPercentile, ambiguousScale float64) 
 			acc[i] ^= sum[i]
 		}
 	}
-	for i, id := range g.ids {
+	for _, id := range g.Nodes() {
 		xor(&nodes, "n\x00"+id)
-		for j, e := range g.adj[i] {
-			if j < i {
-				continue // seen from the other end
-			}
-			a, b := id, g.ids[j]
-			if b < a {
-				a, b = b, a
-			}
-			xor(&edges, "e\x00"+a+"\x01"+b+"\x01"+strconv.FormatFloat(e.weight, 'g', -1, 64)+"\x01"+e.confidence)
+	}
+	for _, e := range g.Edges() {
+		a, b := e.U, e.V
+		if b < a {
+			a, b = b, a
 		}
+		xor(&edges, "e\x00"+a+"\x01"+b+"\x01"+strconv.FormatFloat(e.Weight, 'g', -1, 64)+"\x01"+e.Confidence)
 	}
 	h := sha256.New()
 	fmt.Fprintf(h, "topology-v1|%g|%g|%g|%d|%d|", resolution, hubsPercentile, ambiguousScale, g.NumNodes(), g.NumEdges())
