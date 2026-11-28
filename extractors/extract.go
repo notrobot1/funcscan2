@@ -23,7 +23,10 @@ import (
 	"sync"
 
 	"github.com/notrobot1/funcscan2/extractors/base"
+	"github.com/notrobot1/funcscan2/extractors/csharp"
 	golang "github.com/notrobot1/funcscan2/extractors/go"
+	"github.com/notrobot1/funcscan2/extractors/java"
+	"github.com/notrobot1/funcscan2/extractors/kotlin"
 )
 
 // The graph types live in extractors/base so that language packages can use
@@ -76,6 +79,9 @@ func init() {
 	// The languages this module ships. Supporting another one is a subpackage
 	// that returns a base.Language, and one line here.
 	Register(golang.Language())
+	Register(java.Language())
+	Register(csharp.Language())
+	Register(kotlin.Language())
 }
 
 // Register adds a language, or replaces the one already registered under the

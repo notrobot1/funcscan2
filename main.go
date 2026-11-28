@@ -24,7 +24,7 @@ import (
 )
 
 func main() {
-
+	asJSON := flag.Bool("json", false, "print the whole graph as JSON")
 	list := flag.Bool("list", false, "only list the files that would be extracted")
 
 	root := flag.String("root", "", "directory ids and paths are relative to (default: the first argument if it is a directory)")
@@ -58,10 +58,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(result); err != nil {
-		log.Fatal(err)
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(result); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 
 	fmt.Printf("files: %d, nodes: %d, edges: %d\n", len(files), len(result.Nodes), len(result.Edges))
