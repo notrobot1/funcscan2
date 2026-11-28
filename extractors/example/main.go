@@ -4,6 +4,7 @@
 //	go run ./extractors/example path/to/repo          # summary
 //	go run ./extractors/example -json path/to/repo    # the whole graph as JSON
 //	go run ./extractors/example -html report.html path/to/repo
+//	go run ./extractors/example -graph graph.html -callflow callflow.html path/to/repo
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/notrobot1/funcscan2/analyze"
 	"github.com/notrobot1/funcscan2/cluster"
@@ -20,12 +22,15 @@ import (
 	"github.com/notrobot1/funcscan2/graph"
 	"github.com/notrobot1/funcscan2/naming"
 	"github.com/notrobot1/funcscan2/report"
+	"github.com/notrobot1/funcscan2/viz"
 )
 
 func main() {
 	asJSON := flag.Bool("json", false, "print the whole graph as JSON")
 	list := flag.Bool("list", false, "only list the files that would be extracted")
 	htmlOut := flag.String("html", "", "write the HTML report to this file")
+	graphOut := flag.String("graph", "", "write the interactive graph page to this file")
+	callflowOut := flag.String("callflow", "", "write the call-flow architecture page to this file")
 	root := flag.String("root", "", "directory ids and paths are relative to (default: the first argument if it is a directory)")
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -109,6 +114,19 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("\nreport written to", *htmlOut)
+	}
+	if *graphOut != "" {
+		aggregated, err := viz.WriteNetwork(*graphOut, g, communities, viz.NetworkOptions{Title: filepath.Base(*root), Labels: labels})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("graph written to %s (drawn as communities: %v)\n", *graphOut, aggregated)
+	}
+	if *callflowOut != "" {
+		if err := viz.WriteCallflow(*callflowOut, g, communities, viz.CallflowOptions{Project: filepath.Base(*root), Labels: labels}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("call flow written to", *callflowOut)
 	}
 	for _, w := range result.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
