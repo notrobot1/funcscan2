@@ -20,12 +20,13 @@ import (
 	"github.com/notrobot1/funcscan2/graph"
 	"github.com/notrobot1/funcscan2/naming"
 	"github.com/notrobot1/funcscan2/report"
+	"github.com/notrobot1/funcscan2/viz"
 )
 
 func main() {
-	asJSON := flag.Bool("json", false, "print the whole graph as JSON")
+
 	list := flag.Bool("list", false, "only list the files that would be extracted")
-	htmlOut := flag.String("html", "", "write the HTML report to this file")
+
 	root := flag.String("root", "", "directory ids and paths are relative to (default: the first argument if it is a directory)")
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -57,13 +58,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(result); err != nil {
-			log.Fatal(err)
-		}
-		return
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(result); err != nil {
+		log.Fatal(err)
 	}
 
 	fmt.Printf("files: %d, nodes: %d, edges: %d\n", len(files), len(result.Nodes), len(result.Edges))
@@ -103,14 +101,24 @@ func main() {
 	for _, q := range analyze.SuggestQuestions(g, communities, labels, 4) {
 		fmt.Printf("  [%s] %s\n", q.Type, q.Question)
 	}
-	if *htmlOut != "" {
-		r := report.New(g, communities, report.Options{Root: *root, Labels: labels})
-		if err := r.WriteHTML(*htmlOut); err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("\nreport written to", *htmlOut)
+
+	r := report.New(g, communities, report.Options{Root: *root, Labels: labels})
+	if err := r.WriteHTML("report.html"); err != nil {
+		log.Fatal(err)
 	}
+	fmt.Println("\nreport written to", "report.html")
+
 	for _, w := range result.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+
+	_, err = viz.WriteNetwork("graph.html", g, communities,
+		viz.NetworkOptions{Title: "myproject", Labels: labels})
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	err = viz.WriteCallflow("callflow.html", g, communities, viz.CallflowOptions{Project: "myproject", Labels: labels})
+	if err != nil {
+		fmt.Println(err.Error())
 	}
 }
